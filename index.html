@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Romantic Memory Tree</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Xóa thanh cuộn */
+            /* Gradient Bầu trời đêm tĩnh lặng */
+            background: linear-gradient(to bottom, #020111 0%, #150935 40%, #20124d 100%);
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        /* Style cho phần chữ Loading mờ mờ ban đầu */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2rem;
+            letter-spacing: 2px;
+            pointer-events: none;
+        }
+    </style>
+    <!-- Import thư viện Three.js thông qua Import Maps -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="loading">Đang tải ký ức...</div>
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ========================================================
+        // 1. CẤU HÌNH LINK ẢNH CỦA BẠN GÁI VÀO ĐÂY
+        // Thay thế URL bằng hình ảnh của bạn. Khuyên dùng ảnh chân dung dọc (aspect ratio 3:4).
+        // ========================================================
+        const girlfriendImages = [
+            'anh1',
+            'anh2',
+            'anh3',
+            'anh4',
+            'anh5'
+        ];
+
+        // Biến toàn cục
+        let scene, camera, renderer, controls;
+        let starMesh, treeGroup, rock;
+        let leaves = [];        // Chứa toàn bộ các lá trên cây
+        let fallingLeaves = []; // Chứa các lá đang rơi
+
+        const textureLoader = new THREE.TextureLoader();
+        const loadedTextures = [];
+        let texturesLoadedCount = 0;
+
+        // Tải toàn bộ texture trước khi khởi tạo 3D
+        girlfriendImages.forEach((url) => {
+            textureLoader.load(url, (texture) => {
+                // Sửa màu sRGB cho texture đẹp hơn
+                texture.colorSpace = THREE.SRGBColorSpace;
+                loadedTextures.push(texture);
+                texturesLoadedCount++;
+                if (texturesLoadedCount === girlfriendImages.length) {
+                    document.getElementById('loading').style.display = 'none';
+                    init();
+                    animate();
+                }
+            });
+        });
+
+        function init() {
+            // -- SCENE --
+            scene = new THREE.Scene();
+            
+            // Xóa background của WebGL để xuyên thấu qua CSS gradient
+            // scene.background = new THREE.Color(0x020111); // Bỏ qua nếu dùng css
+
+            // Thêm chút sương mù mờ ảo phía xa
+            scene.fog = new THREE.FogExp2(0x20124d, 0.003);
+
+            // -- CAMERA --
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 10, 40);
+
+            // -- RENDERER --
+            const container = document.getElementById('canvas-container');
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Tối ưu hiệu suất
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // -- ORBIT CONTROLS (Tương tác quay & Zoom) --
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 15;
+            controls.maxDistance = 100;
+            controls.maxPolarAngle = Math.PI / 2 + 0.1; // Không cho lặn quá sâu dưới hòn đá
+
+            // -- 1. MỎM ĐÁ LƠ LỬNG --
+            const rockGeo = new THREE.DodecahedronGeometry(8, 2);
+            const rockMat = new THREE.MeshStandardMaterial({ 
+                color: 0x3d2817, 
+                roughness: 0.9, 
+                flatShading: true 
+            });
+            rock = new THREE.Mesh(rockGeo, rockMat);
+            // Kéo giãn cho dẹt lại tạo hình đảo
+            rock.scale.set(1.5, 0.5, 1.2);
+            rock.position.y = -3;
+            rock.receiveShadow = true;
+            scene.add(rock);
+
+            // Thêm các rễ cây đâm xuống hòn đá (trang trí)
+            createRoots();
+
+            // -- 2. CÁI CÂY (Fractal Tree) & LÁ BẰNG HÌNH ẢNH --
+            treeGroup = new THREE.Group();
+            treeGroup.position.y = rock.position.y + 2; // Gốc mọc từ đỉnh đá
+            scene.add(treeGroup);
+
+            // Hàm tạo thân và nhánh cây đệ quy
+            const maxDepth = 4;
+            function createBranch(startRadius, length, depth) {
+                const branchGroup = new THREE.Group();
+                
+                // Khung Geometry nhánh cây
+                const geometry = new THREE.CylinderGeometry(startRadius * 0.7, startRadius, length, 8, 1, false);
+                // Dời tâm (pivot point) xuống gốc của nhánh để xoay chuẩn
+                geometry.translate(0, length / 2, 0); 
+
+                const material = new THREE.MeshStandardMaterial({ 
+                    color: 0x2d1a0d, 
+                    roughness: 1 
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.castShadow = true;
+                branchGroup.add(mesh);
+
+                if (depth > 0) {
+                    // Tỏa ra 2 - 3 nhánh con
+                    const branchCount = depth === maxDepth ? 2 : Math.floor(Math.random() * 2) + 2;
+                    for (let i = 0; i < branchCount; i++) {
+                        const childBranch = createBranch(startRadius * 0.7, length * 0.8, depth - 1);
+                        childBranch.position.y = length; // Nối vào ngọn nhánh hiện tại
+                        
+                        // Quay cành với góc tự nhiên ngẫu nhiên
+                        const angleZ = (Math.random() * Math.PI / 4) + 0.2; 
+                        const angleY = (i * (Math.PI * 2 / branchCount)) + Math.random();
+                        
+                        childBranch.rotation.z = i % 2 === 0 ? angleZ : -angleZ;
+                        childBranch.rotation.y = angleY;
+                        // Hơi ngả ngẫu nhiên
+                        childBranch.rotation.x = (Math.random() - 0.5) * 0.5;
+
+                        branchGroup.add(childBranch);
+                    }
+                } else {
+                    // Mọc Lá Ảnh ở những cành sâu nhất (tán lá)
+                    // Một nhánh cụt mọc 3-4 chiếc lá ảnh
+                    for(let k = 0; k < 3; k++) {
+                        const leaf = createPhotoLeaf();
+                        leaf.position.y = length - (Math.random() * length * 0.5);
+                        leaf.position.x = (Math.random() - 0.5) * 4;
+                        leaf.position.z = (Math.random() - 0.5) * 4;
+                        
+                        // Gắn một góc nghiêng cho lá treo
+                        leaf.rotation.x = Math.PI/2 - (Math.random() * 0.5); // Nghiêng hơi dốc
+                        leaf.rotation.y = Math.random() * Math.PI;
+
+                        branchGroup.add(leaf);
+                        leaves.push({
+                            mesh: leaf,
+                            originParent: branchGroup,
+                            randomOffset: Math.random() * Math.PI * 2 // Dành cho wind anim
+                        });
+                    }
+                }
+                return branchGroup;
+            }
+
+            const trunk = createBranch(1.5, 8, maxDepth);
+            treeGroup.add(trunk);
+
+
+            // -- 3. HỆ THỐNG HẠT BỤI SAO LẤP LÁNH (Stars) --
+            const particlesGeometry = new THREE.BufferGeometry();
+            const particlesCount = 2000;
+            const posArray = new Float32Array(particlesCount * 3);
+
+            for (let i = 0; i < particlesCount * 3; i++) {
+                // Tỏa ra không gian cầu xung quanh khoảng -150 đến 150
+                posArray[i] = (Math.random() - 0.5) * 300; 
+            }
+            particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            
+            const particlesMaterial = new THREE.PointsMaterial({
+                size: 0.8,
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending // Tạo cảm giác sáng phát quang
+            });
+
+            starMesh = new THREE.Points(particlesGeometry, particlesMaterial);
+            scene.add(starMesh);
+
+
+            // -- 4. ÁNH SÁNG (LIGHTING) --
+            // Môi trường
+            const ambientLight = new THREE.AmbientLight(0xfff5f0, 0.4); 
+            scene.add(ambientLight);
+
+            // Đèn hướng mô phỏng ánh trăng (Ánh xanh)
+            const moonLight = new THREE.DirectionalLight(0xa5afff, 1);
+            moonLight.position.set(30, 50, -30);
+            moonLight.castShadow = true;
+            moonLight.shadow.mapSize.width = 1024;
+            moonLight.shadow.mapSize.height = 1024;
+            scene.add(moonLight);
+
+            // Đèn chiếu ngay trên gốc cây tỏa ra ánh sáng thần tiên ấm áp 
+            const magicalLight = new THREE.PointLight(0xffd485, 300, 100);
+            magicalLight.position.set(0, 5, 2);
+            scene.add(magicalLight);
+
+            // Xử lý sự kiện rơi lá theo chu kỳ 
+            // Cứ mỗi 5 giây rụng một chiếc
+            setInterval(dropRandomLeaf, 5000);
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        // Tạo 1 khung ảnh chứa bức hình (giả lập khung ảnh chụp Polaroid)
+        function createPhotoLeaf() {
+            const leafGroup = new THREE.Group();
+
+            // Khung nền màu trắng
+            const bgGeo = new THREE.PlaneGeometry(3.3, 4.3);
+            const bgMat = new THREE.MeshStandardMaterial({ 
+                color: 0xffffff, 
+                side: THREE.DoubleSide, 
+                roughness: 0.8
+            });
+            const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+            bgMesh.castShadow = true;
+            leafGroup.add(bgMesh);
+
+            // Hình ảnh bên trong khung
+            const photoGeo = new THREE.PlaneGeometry(3, 3.6);
+            
+            // Randomly pick texture from pre-loaded list
+            const texIdx = Math.floor(Math.random() * loadedTextures.length);
+            const tex = loadedTextures[texIdx];
+            
+            const photoMat = new THREE.MeshStandardMaterial({
+                map: tex,
+                side: THREE.DoubleSide,
+                roughness: 0.4,
+                // Làm cho bức ảnh hơi tự phát sáng một xíu cho mộng mơ
+                emissive: 0x222222,
+                emissiveMap: tex
+            });
+
+            const photoMesh = new THREE.Mesh(photoGeo, photoMat);
+            photoMesh.position.z = 0.02; // Nhích lên 1 chút trên trục z mặt trước
+            photoMesh.position.y = 0.15; // Nhích khung viền trên Polaroid
+            leafGroup.add(photoMesh);
+            
+            // Backside image, clone và quay 180 độ
+            const photoMeshBack = photoMesh.clone();
+            photoMeshBack.position.z = -0.02;
+            photoMeshBack.rotation.y = Math.PI;
+            leafGroup.add(photoMeshBack);
+
+            // Nhỏ lại scale của cụm nhóm này thành size cái "lá"
+            leafGroup.scale.set(0.6, 0.6, 0.6);
+
+            return leafGroup;
+        }
+
+        function createRoots() {
+            const rootGeo = new THREE.ConeGeometry(0.5, 4, 5);
+            rootGeo.translate(0, -2, 0); // Kéo xuống dưới đảo
+            const rootMat = new THREE.MeshStandardMaterial({ color: 0x2d1a0d, roughness: 1 });
+            
+            for(let i=0; i<6; i++) {
+                const r = new THREE.Mesh(rootGeo, rootMat);
+                const angle = i * Math.PI / 3 + Math.random();
+                r.position.set(Math.cos(angle)*1.5, 2.5, Math.sin(angle)*1.5);
+                r.rotation.z = Math.random() * 0.4 - 0.2;
+                r.rotation.x = Math.random() * 0.4 - 0.2;
+                treeGroup.add(r);
+            }
+        }
+
+        // Tách 1 cái lá khỏi cây và chuyển nó cho hệ thống vật lý rơi lơ lửng
+        function dropRandomLeaf() {
+            if (leaves.length === 0) return;
+            
+            // Lấy 1 lá ngẫu nhiên trên cây
+            const index = Math.floor(Math.random() * leaves.length);
+            const leafObj = leaves.splice(index, 1)[0]; 
+            const mesh = leafObj.mesh;
+
+            // Sử dụng tính năng mới của Threejs, `attach()` giúp 
+            // đối tượng vẫn giữ nguyên tọa độ Global dù đổi gốc Parent về Scene.
+            scene.attach(mesh); 
+
+            fallingLeaves.push({
+                mesh: mesh,
+                time: 0, 
+                // Random lực gió đưa ngang
+                windSpeedX: (Math.random() - 0.5) * 0.02,
+                windSpeedZ: (Math.random() - 0.5) * 0.02,
+                // Góc lắc rơi lơ lửng 
+                swaySpeed: 1.5 + Math.random()
+            });
+        }
+
+        // -- ANIMATION LOOP --
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            controls.update(); // Update góc camera mượt mà do Damping
+
+            // 1. Chuyển động môi trường
+            // Xoay đám sao bụi
+            starMesh.rotation.y = time * 0.01;
+            // Đá nhẹ đung đưa
+            rock.position.y = -3 + Math.sin(time) * 0.5;
+            treeGroup.position.y = rock.position.y + 2;
+
+            // 2. Hiệu ứng gió cho Cây và Lá
+            // Toàn bộ cái cây khẽ xoay trục 
+            treeGroup.rotation.x = Math.sin(time * 0.5) * 0.01;
+            treeGroup.rotation.z = Math.cos(time * 0.3) * 0.015;
+
+            // Xoay nhẹ từng lá đang còn bám cành
+            leaves.forEach(leaf => {
+                const mesh = leaf.mesh;
+                // Vẩy qua vẩy lại kết hợp xoắn gốc cành nhẹ
+                mesh.rotation.z = Math.sin(time * 1.2 + leaf.randomOffset) * 0.05;
+                mesh.rotation.y = Math.cos(time * 0.8 + leaf.randomOffset) * 0.05;
+            });
+
+            // 3. Hiệu ứng lá rơi lơ lửng
+            for (let i = fallingLeaves.length - 1; i >= 0; i--) {
+                const fallInfo = fallingLeaves[i];
+                const leafM = fallInfo.mesh;
+                fallInfo.time += delta;
+
+                // Rơi xuống trục Y từ từ
+                leafM.position.y -= delta * 1.5; 
+                // Trôi theo gió trên 2 mặt cầu 
+                leafM.position.x += fallInfo.windSpeedX;
+                leafM.position.z += fallInfo.windSpeedZ;
+
+                // Hiệu ứng "liệng, rụng" của lá dẹt bay trong gió bằng xoay vòng vòng
+                leafM.rotation.x = Math.sin(fallInfo.time * fallInfo.swaySpeed) * 0.5 + Math.PI/2;
+                leafM.rotation.y += delta * 0.2; 
+
+                // Xóa khỏi RAM khi rụng xa lút qua mặt đất (camera mịt mù không thấy)
+                if (leafM.position.y < -30) {
+                    scene.remove(leafM);
+                    // Dọn rác
+                    leafM.traverse((child) => {
+                        if (child.isMesh) {
+                            child.geometry.dispose();
+                            child.material.dispose();
+                        }
+                    });
+                    fallingLeaves.splice(i, 1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Tự động resize màn hình Responsive
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
