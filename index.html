@@ -130,14 +130,14 @@
             rock.receiveShadow = true;
             scene.add(rock);
 
-            // Thêm các rễ cây đâm xuống hòn đá (trang trí)
-            createRoots();
+            
 
             // -- 2. CÁI CÂY (Fractal Tree) & LÁ BẰNG HÌNH ẢNH --
             treeGroup = new THREE.Group();
             treeGroup.position.y = rock.position.y + 2; // Gốc mọc từ đỉnh đá
             scene.add(treeGroup);
-
+// Thêm các rễ cây đâm xuống hòn đá (trang trí)
+            createRoots();
             // Hàm tạo thân và nhánh cây đệ quy
             const maxDepth = 4;
             function createBranch(startRadius, length, depth) {
